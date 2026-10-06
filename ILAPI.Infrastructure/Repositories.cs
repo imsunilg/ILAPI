@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using Dapper;
 using ILAPI.Core;
 using Npgsql;
@@ -7,8 +7,10 @@ namespace ILAPI.Infrastructure;
 
 public interface IUserRepository
 {
-    Task<UserRecord?> FindByEmailAsync(string email);
+    /// <summary>Finds a user by username or email.</summary>
+    Task<UserRecord?> FindByLoginAsync(string login);
     Task<UserRecord?> FindByIdAsync(Guid id);
+    Task<string[]> GetPermissionsAsync(Guid userId);
     Task<UserRecord?> CreateAsync(string email, string passwordHash, string fullName, string? phone);
 }
 
@@ -35,33 +37,48 @@ public interface IQuoteRepository
     Task<QuoteSummary> CreateAsync(Guid userId, string productCode, PremiumResult premium,
         Func<IDbConnection, IDbTransaction, Guid, Task> insertDetail);
     Task<IEnumerable<QuoteSummary>> ListForUserAsync(Guid userId);
-    Task<QuoteSummary?> GetForUserAsync(Guid userId, Guid quoteId);
+    Task<IEnumerable<QuoteSummary>> ListAllAsync(string? status = null);
+    /// <summary>Returns the quote if it belongs to the user, or to anyone when <paramref name="anyOwner"/> is true.</summary>
+    Task<QuoteSummary?> GetAsync(Guid userId, Guid quoteId, bool anyOwner);
 }
 
 public class UserRepository(NpgsqlDataSource db) : IUserRepository
 {
-    private const string Cols = "id, email::text AS email, password_hash, full_name, role, is_active";
+    private const string Select =
+        "SELECT u.id, u.email::text AS email, u.username::text AS username, u.password_hash, u.full_name, u.is_active, " +
+        "COALESCE((SELECT r.code FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id WHERE ur.user_id = u.id ORDER BY r.id LIMIT 1), 'CUSTOMER') AS role " +
+        "FROM auth.users u";
 
-    public async Task<UserRecord?> FindByEmailAsync(string email)
+    public async Task<UserRecord?> FindByLoginAsync(string login)
     {
         await using var c = await db.OpenConnectionAsync();
-        return await c.QuerySingleOrDefaultAsync<UserRecord>($"SELECT {Cols} FROM auth.users WHERE email = @email", new { email });
+        return await c.QueryFirstOrDefaultAsync<UserRecord>($"{Select} WHERE u.username = @login OR u.email = @login ORDER BY (u.username = @login) DESC", new { login });
     }
 
     public async Task<UserRecord?> FindByIdAsync(Guid id)
     {
         await using var c = await db.OpenConnectionAsync();
-        return await c.QuerySingleOrDefaultAsync<UserRecord>($"SELECT {Cols} FROM auth.users WHERE id = @id", new { id });
+        return await c.QuerySingleOrDefaultAsync<UserRecord>($"{Select} WHERE u.id = @id", new { id });
+    }
+
+    public async Task<string[]> GetPermissionsAsync(Guid userId)
+    {
+        await using var c = await db.OpenConnectionAsync();
+        return (await c.QueryAsync<string>(
+            "SELECT DISTINCT p.code FROM auth.user_roles ur JOIN auth.role_permissions rp ON rp.role_id = ur.role_id " +
+            "JOIN auth.permissions p ON p.id = rp.permission_id WHERE ur.user_id = @userId ORDER BY p.code", new { userId })).ToArray();
     }
 
     public async Task<UserRecord?> CreateAsync(string email, string passwordHash, string fullName, string? phone)
     {
         await using var c = await db.OpenConnectionAsync();
         await using var tx = await c.BeginTransactionAsync();
-        var user = await c.QuerySingleOrDefaultAsync<UserRecord>(
-            $"INSERT INTO auth.users(email, password_hash, full_name) VALUES (@email, @passwordHash, @fullName) " +
-            $"ON CONFLICT (email) DO NOTHING RETURNING {Cols}", new { email, passwordHash, fullName }, tx);
-        if (user is null) return null;
+        var id = await c.ExecuteScalarAsync<Guid?>(
+            "INSERT INTO auth.users(email, username, password_hash, full_name) VALUES (@email, @email, @passwordHash, @fullName) " +
+            "ON CONFLICT DO NOTHING RETURNING id", new { email, passwordHash, fullName }, tx);
+        if (id is null) return null;
+        await c.ExecuteAsync("INSERT INTO auth.user_roles(user_id, role_id) SELECT @id, id FROM auth.roles WHERE code = 'CUSTOMER'", new { id }, tx);
+        var user = await c.QuerySingleAsync<UserRecord>($"{Select} WHERE u.id = @id", new { id }, tx);
         await c.ExecuteAsync(
             "INSERT INTO customer.customers(user_id, full_name, email, phone) VALUES (@id, @fullName, @email, @phone)",
             new { user.Id, fullName, email, phone }, tx);
@@ -142,6 +159,8 @@ public class QuoteRepository(NpgsqlDataSource db) : IQuoteRepository
     {
         await using var c = await db.OpenConnectionAsync();
         await using var tx = await c.BeginTransactionAsync();
+        // staff users have no customer profile by default: create one on first quote
+        await c.ExecuteAsync("INSERT INTO customer.customers(user_id, full_name, email) SELECT id, full_name, email FROM auth.users WHERE id = @userId ON CONFLICT (user_id) DO NOTHING", new { userId }, tx);
         var customerId = await c.ExecuteScalarAsync<Guid>("SELECT id FROM customer.customers WHERE user_id = @userId", new { userId }, tx);
         var id = await c.ExecuteScalarAsync<Guid>(
             "INSERT INTO quote.quotes(quote_number, customer_id, product_id, base_premium, tax, total_premium) " +
@@ -160,11 +179,53 @@ public class QuoteRepository(NpgsqlDataSource db) : IQuoteRepository
             new { userId });
     }
 
-    public async Task<QuoteSummary?> GetForUserAsync(Guid userId, Guid quoteId)
+    public async Task<IEnumerable<QuoteSummary>> ListAllAsync(string? status = null)
+    {
+        await using var c = await db.OpenConnectionAsync();
+        return await c.QueryAsync<QuoteSummary>(
+            $"{SummarySql} WHERE (@status IS NULL OR status = @status) ORDER BY created_at DESC LIMIT 200", new { status });
+    }
+
+    public async Task<QuoteSummary?> GetAsync(Guid userId, Guid quoteId, bool anyOwner)
     {
         await using var c = await db.OpenConnectionAsync();
         return await c.QuerySingleOrDefaultAsync<QuoteSummary>(
-            $"{SummarySql} WHERE id = @quoteId AND customer_id IN (SELECT id FROM customer.customers WHERE user_id = @userId)",
-            new { quoteId, userId });
+            $"{SummarySql} WHERE id = @quoteId AND (@anyOwner OR customer_id IN (SELECT id FROM customer.customers WHERE user_id = @userId))",
+            new { quoteId, userId, anyOwner });
     }
+}
+
+public interface IAdminRepository
+{
+    Task<IEnumerable<dynamic>> CustomersAsync();
+    Task<IEnumerable<dynamic>> UsersAsync();
+    Task<IEnumerable<dynamic>> RolesAsync();
+    Task<IEnumerable<dynamic>> ReportSummaryAsync();
+}
+
+public class AdminRepository(NpgsqlDataSource db) : IAdminRepository
+{
+    private async Task<IEnumerable<dynamic>> Q(string sql)
+    {
+        await using var c = await db.OpenConnectionAsync();
+        return (await c.QueryAsync(sql)).ToList();
+    }
+
+    public Task<IEnumerable<dynamic>> CustomersAsync() => Q(
+        "SELECT id, full_name, email::text AS email, phone, created_at FROM customer.customers ORDER BY created_at DESC LIMIT 200");
+
+    public Task<IEnumerable<dynamic>> UsersAsync() => Q(
+        "SELECT u.id, u.username::text AS username, u.email::text AS email, u.full_name, u.is_active, " +
+        "COALESCE(string_agg(r.code, ', '), '') AS roles FROM auth.users u " +
+        "LEFT JOIN auth.user_roles ur ON ur.user_id = u.id LEFT JOIN auth.roles r ON r.id = ur.role_id " +
+        "GROUP BY u.id ORDER BY u.created_at LIMIT 200");
+
+    public Task<IEnumerable<dynamic>> RolesAsync() => Q(
+        "SELECT r.code, r.name, COALESCE(string_agg(p.code, ', ' ORDER BY p.code), '') AS permissions FROM auth.roles r " +
+        "LEFT JOIN auth.role_permissions rp ON rp.role_id = r.id LEFT JOIN auth.permissions p ON p.id = rp.permission_id " +
+        "GROUP BY r.id ORDER BY r.id");
+
+    public Task<IEnumerable<dynamic>> ReportSummaryAsync() => Q(
+        "SELECT product_name, status, count(*)::int AS quotes, COALESCE(sum(total_premium), 0) AS total_premium " +
+        "FROM quote.v_quote_summary GROUP BY product_name, status ORDER BY product_name, status");
 }

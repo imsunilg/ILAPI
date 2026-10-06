@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using ILAPI.API.Services;
 using ILAPI.Infrastructure;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -32,7 +32,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         NameClaimType = "name"
     };
 });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(o =>
+{
+    // one policy per permission code; the permission claims are issued by the server from the database
+    foreach (var perm in ILAPI.Core.Permissions.All) o.AddPolicy(perm, p => p.RequireAuthenticatedUser().RequireClaim("permission", perm));
+});
 
 var origins = builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? [];
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod()));
@@ -60,3 +64,4 @@ using (var scope = app.Services.CreateScope())
 app.Run();
 
 public partial class Program;
+

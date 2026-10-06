@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -21,6 +21,7 @@ public static class DependencyInjection
         services.AddScoped<ITokenRepository, TokenRepository>();
         services.AddScoped<IProductRepository, ProductRepository>();
         services.AddScoped<IQuoteRepository, QuoteRepository>();
+        services.AddScoped<IAdminRepository, AdminRepository>();
         services.AddHealthChecks().AddCheck<PostgresHealthCheck>("postgres");
         return services;
     }
@@ -43,3 +44,4 @@ public class PostgresHealthCheck(NpgsqlDataSource db) : IHealthCheck
         }
     }
 }
+

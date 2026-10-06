@@ -1,4 +1,4 @@
-using System.IdentityModel.Tokens.Jwt;
+﻿using System.IdentityModel.Tokens.Jwt;
 using System.Security.Cryptography;
 using System.Text;
 using ILAPI.Core;
@@ -20,14 +20,18 @@ public class TokenService(Microsoft.Extensions.Options.IOptions<JwtOptions> opti
 {
     private readonly JwtOptions _o = options.Value;
 
-    public (string Token, DateTime ExpiresAt) CreateAccessToken(UserRecord u)
+    public (string Token, int ExpiresInSeconds) CreateAccessToken(UserRecord u, IEnumerable<string> permissions)
     {
         var expires = DateTime.UtcNow.AddMinutes(_o.AccessMinutes);
         var creds = new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_o.Key)), SecurityAlgorithms.HmacSha256);
         var jwt = new JwtSecurityToken(_o.Issuer, _o.Audience,
-            [new("sub", u.Id.ToString()), new("email", u.Email), new("name", u.FullName), new("role", u.Role)],
+            new List<System.Security.Claims.Claim>
+            {
+                new("sub", u.Id.ToString()), new("email", u.Email), new("preferred_username", u.Username),
+                new("name", u.FullName), new("role", u.Role),
+            }.Concat(permissions.Select(p => new System.Security.Claims.Claim("permission", p))),
             expires: expires, signingCredentials: creds);
-        return (new JwtSecurityTokenHandler().WriteToken(jwt), expires);
+        return (new JwtSecurityTokenHandler().WriteToken(jwt), _o.AccessMinutes * 60);
     }
 
     public static string NewOpaqueToken() => Base64Url(RandomNumberGenerator.GetBytes(48));
@@ -39,3 +43,4 @@ public class TokenService(Microsoft.Extensions.Options.IOptions<JwtOptions> opti
 
     private static string Base64Url(byte[] b) => Convert.ToBase64String(b).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
+

@@ -1,11 +1,13 @@
-namespace ILAPI.Core;
+﻿namespace ILAPI.Core;
 
 public record RegisterRequest(string Email, string Password, string FullName, string? Phone);
-public record LoginRequest(string Email, string Password);
+public record LoginRequest(string Username, string Password);
 public record RefreshRequest(string RefreshToken);
 public record HandoffExchangeRequest(string Token);
-public record AuthResponse(string AccessToken, string RefreshToken, DateTime ExpiresAt, UserInfo User);
-public record UserInfo(Guid Id, string Email, string FullName, string Role);
+public record LogoutRequest(string RefreshToken);
+public record ApiResponse<T>(bool Success, string Message, T? Data);
+public record AuthData(string AccessToken, string RefreshToken, int ExpiresIn, UserInfo User);
+public record UserInfo(Guid UserId, string Username, string DisplayName, string Role, string[] Permissions);
 
 public record ProductDto(int Id, string Code, string Name, string? Description, decimal BaseRate);
 
@@ -22,8 +24,10 @@ public class UserRecord
 {
     public Guid Id { get; set; }
     public string Email { get; set; } = "";
+    public string Username { get; set; } = "";
     public string PasswordHash { get; set; } = "";
     public string FullName { get; set; } = "";
     public string Role { get; set; } = "customer";
     public bool IsActive { get; set; }
 }
+

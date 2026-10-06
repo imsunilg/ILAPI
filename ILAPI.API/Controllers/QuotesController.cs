@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using ILAPI.API.Services;
 using ILAPI.Core;
 using ILAPI.Infrastructure;
@@ -20,16 +20,27 @@ public class ProductsController(IProductRepository products) : ControllerBase
 [Route("api/quotes")]
 public class QuotesController(IProductRepository products, IQuoteRepository quotes) : ControllerBase
 {
+    private bool CanViewAll => User.HasClaim("permission", Permissions.QuotesView);
+    private bool CanViewOwn => User.HasClaim("permission", Permissions.QuotesOwn);
+
+    /// <summary>Staff with quotes.view see every quote; customers (quotes.own) see only their own.</summary>
     [HttpGet]
-    public async Task<IEnumerable<QuoteSummary>> List() => await quotes.ListForUserAsync(User.UserId());
+    public async Task<ActionResult<IEnumerable<QuoteSummary>>> List()
+    {
+        if (CanViewAll) return Ok(await quotes.ListAllAsync());
+        if (CanViewOwn) return Ok(await quotes.ListForUserAsync(User.UserId()));
+        return Forbid();
+    }
 
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<QuoteSummary>> Get(Guid id)
     {
-        var q = await quotes.GetForUserAsync(User.UserId(), id);
+        if (!CanViewAll && !CanViewOwn) return Forbid();
+        var q = await quotes.GetAsync(User.UserId(), id, CanViewAll);
         return q is null ? NotFound() : Ok(q);
     }
 
+    [Authorize(Policy = Permissions.MotorQuote)]
     [HttpPost("motor")]
     public Task<ActionResult<QuoteSummary>> Motor(MotorQuoteRequest r) => Run("MOTOR", async rate =>
     {
@@ -41,6 +52,7 @@ public class QuotesController(IProductRepository products, IQuoteRepository quot
         "VALUES (@id, @Make, @Model, @Year, @VehicleValue, @DriverAge, @ClaimsLast5Years, @CoverageCode)",
         new { id, r.Make, r.Model, r.Year, r.VehicleValue, r.DriverAge, r.ClaimsLast5Years, r.CoverageCode }, tx));
 
+    [Authorize(Policy = Permissions.HomeQuote)]
     [HttpPost("home")]
     public Task<ActionResult<QuoteSummary>> Home(HomeQuoteRequest r) => Run("HOME",
         rate => Task.FromResult(PremiumCalculator.Home(r, rate, DateTime.UtcNow.Year)),
@@ -49,6 +61,7 @@ public class QuotesController(IProductRepository products, IQuoteRepository quot
             "VALUES (@id, @PropertyType, @Postcode, @YearBuilt, @RebuildValue, @ContentsValue)",
             new { id, r.PropertyType, r.Postcode, r.YearBuilt, r.RebuildValue, r.ContentsValue }, tx));
 
+    [Authorize(Policy = Permissions.TravelQuote)]
     [HttpPost("travel")]
     public Task<ActionResult<QuoteSummary>> Travel(TravelQuoteRequest r) => Run("TRAVEL", async rate =>
     {
@@ -61,6 +74,7 @@ public class QuotesController(IProductRepository products, IQuoteRepository quot
         new { id, dest = r.DestinationCode!.ToUpperInvariant(), s = r.StartDate.ToDateTime(TimeOnly.MinValue),
               e = r.EndDate.ToDateTime(TimeOnly.MinValue), r.Travellers, r.TripCost }, tx));
 
+    [Authorize(Policy = Permissions.LiabilityQuote)]
     [HttpPost("liability")]
     public Task<ActionResult<QuoteSummary>> Liability(LiabilityQuoteRequest r) => Run("LIABILITY",
         rate => Task.FromResult(PremiumCalculator.Liability(r, rate)),
@@ -81,3 +95,4 @@ public class QuotesController(IProductRepository products, IQuoteRepository quot
         return CreatedAtAction(nameof(Get), new { id = created.Id }, created);
     }
 }
+
