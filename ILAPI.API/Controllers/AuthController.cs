@@ -58,6 +58,7 @@ public class AuthController(IUserRepository users, ITokenRepository tokens, Toke
     /// <summary>Creates a short-lived one-time token that another front end exchanges for a session.</summary>
     [Authorize]
     [HttpPost("handoff")]
+    [HttpPost("~/api/v1/frontend-session")]
     public async Task<IActionResult> CreateHandoff()
     {
         var token = TokenService.NewOpaqueToken();
