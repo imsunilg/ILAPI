@@ -1,0 +1,19 @@
+# secrets
+.env
+*.local.json
+appsettings.Development.local.json
+secrets.json
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+
+# logs / OS / IDE
+logs/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
